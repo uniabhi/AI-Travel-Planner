@@ -2,7 +2,7 @@ import os
 import uvicorn
 import asyncio
 import logging
-from serpapi.google_search import GoogleSearch
+from serpapi import GoogleSearch
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
@@ -11,9 +11,8 @@ from datetime import datetime
 from functools import lru_cache
 
 # Load API Keys
-GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", "AIzaSyAmk1MKE7YVlMLWd4jHdCh7Q4fyhpJAcwA")
-SERP_API_KEY = os.getenv("SERPAPI_KEY", "3fe044aa85a99b7383fbb88b7677389e03a7c373750b3c90237ed16d9279d2a0")
-# Check if API keys are set
+GEMINI_API_KEY = os.getenv("GOOGLE_API_KEY", "YOUR_GOOGLE_API_KEY")
+SERP_API_KEY = os.getenv("SERPAPI_KEY", "YOUR_SERPAPI_KEY")
 
 # Initialize Logger
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -71,8 +70,6 @@ class AIResponse(BaseModel):
     ai_flight_recommendation: str = ""
     ai_hotel_recommendation: str = ""
     itinerary: str = ""
-
-from fastapi import FastAPI, HTTPException
 
 app = FastAPI(title="Travel Planning API", version="1.0.1")
 
@@ -140,46 +137,6 @@ async def search_flights(flight_request: FlightRequest):
         # Return an empty list instead of None
         return []
 
-def get_mock_hotel_data(location):
-    """Generate mock hotel data when API doesn't provide enough information."""
-    return [
-        HotelInfo(
-            name=f"Luxury Hotel {location}",
-            price="$199 per night",
-            rating=9.2,
-            location=f"Downtown {location}",
-            link=""
-        ),
-        HotelInfo(
-            name=f"Plaza Hotel {location}",
-            price="$249 per night",
-            rating=8.8,
-            location=f"City Center, {location}",
-            link=""
-        ),
-        HotelInfo(
-            name=f"Budget Inn {location}",
-            price="$129 per night",
-            rating=7.6,
-            location=f"Airport Area, {location}",
-            link=""
-        ),
-        HotelInfo(
-            name=f"Boutique Hotel {location}",
-            price="$179 per night",
-            rating=8.9,
-            location=f"Historic District, {location}",
-            link=""
-        ),
-        HotelInfo(
-            name=f"Grand Suites {location}",
-            price="$289 per night",
-            rating=9.5,
-            location=f"Riverfront, {location}",
-            link=""
-        )
-    ]
-
 async def search_hotels(hotel_request: HotelRequest):
     """Fetch hotel information from SerpAPI."""
     logger.info(f"Searching hotels for: {hotel_request.location}")
@@ -219,7 +176,7 @@ async def search_hotels(hotel_request: HotelRequest):
         # Transform hotels to match our model
         transformed_hotels = transform_hotel_data(hotels)
         
-        # If all hotels have default values, use mock data instead
+        # If no hotels were found or all have default values, return empty list
         has_valid_data = any(
             hotel.price != "Not available" or 
             hotel.rating > 0.0 or 
@@ -228,15 +185,14 @@ async def search_hotels(hotel_request: HotelRequest):
         )
         
         if not transformed_hotels or not has_valid_data:
-            logger.info("Using mock hotel data due to insufficient API data")
-            return get_mock_hotel_data(hotel_request.location)
+            logger.warning("No valid hotel data found in the search results")
+            return []
             
         return transformed_hotels
     except Exception as e:
         logger.exception(f"Error searching for hotels: {str(e)}")
-        # Return mock data on error
-        logger.info("Using mock hotel data due to API error")
-        return get_mock_hotel_data(hotel_request.location)
+        # Return empty list on error
+        return []
 
 async def get_ai_recommendation(data_type, formatted_data):
     logger.info(f"Getting {data_type} analysis from AI")
@@ -282,6 +238,10 @@ async def get_ai_recommendation(data_type, formatted_data):
         """
     else:
         raise ValueError("Invalid data type for AI recommendation")
+
+    # Check if there's data to analyze
+    if not formatted_data or formatted_data.startswith("No"):
+        return f"Insufficient data to provide {data_type} recommendations. Please try different search parameters."
 
     # Create the agent and task
     analyze_agent = Agent(
@@ -373,7 +333,7 @@ def format_travel_data(data_type, data):
     """Format travel data (flights or hotels) for AI analysis."""
     formatted_data = ""
     
-    if data is None:
+    if data is None or len(data) == 0:
         return f"No {data_type} data available. Please check your search parameters or try again later."
     
     if data_type == "flights":
@@ -474,54 +434,43 @@ def transform_hotel_data(hotels_data):
         try:
             # Log the structure of a sample hotel
             if len(transformed_hotels) == 0:
-                logger.info(f"Sample hotel data structure: {hotel.keys()}")
+                logger.info(f"Sample hotel data structure: {list(hotel.keys())}")
                 logger.info(f"Sample hotel data: {hotel}")
             
-            # Try to extract price from different possible locations
+            # Extract hotel name
+            name = hotel.get("name", "Unknown Hotel")
+            
+            # Extract price (handle different structures)
             price = "Not available"
-            if "price" in hotel:
-                price = hotel["price"]
-            elif "price_overview" in hotel:
-                price = hotel["price_overview"]
-            elif "pricing" in hotel and hotel["pricing"] is not None:
-                price = hotel["pricing"]
+            rate_per_night = hotel.get("rate_per_night", {})
+            if isinstance(rate_per_night, dict):
+                price = rate_per_night.get("lowest", "Not available")
             
-            # Try to extract rating from different possible locations
-            rating = 0.0
-            if "rating" in hotel and hotel["rating"] is not None:
-                try:
-                    rating = float(hotel["rating"])
-                except (ValueError, TypeError):
-                    pass
-            elif "stars" in hotel and hotel["stars"] is not None:
-                try:
-                    rating = float(hotel["stars"])
-                except (ValueError, TypeError):
-                    pass
+            # Extract rating
+            rating = float(hotel.get("overall_rating", 0.0) or 0.0)
             
-            # Try to extract location information
+            # Extract location
             location = "Unknown Location"
-            if "address" in hotel and hotel["address"] is not None:
+            if "address" in hotel:
                 location = hotel["address"]
-            elif "address_info" in hotel and hotel["address_info"] is not None:
-                location = hotel["address_info"].get("street", "Unknown Street")
-                city = hotel["address_info"].get("city", "")
-                if city:
-                    location += f", {city}"
-            elif "location" in hotel and hotel["location"] is not None:
-                location = hotel["location"]
-            elif "neighborhood" in hotel and hotel["neighborhood"] is not None:
-                location = hotel["neighborhood"]
+            elif hotel.get("nearby_places"):
+                nearby = hotel.get("nearby_places", [])
+                if nearby and len(nearby) > 0:
+                    location = nearby[0].get("name", "Unknown Location")
             
-            # Create hotel info object
-            hotel_info = HotelInfo(
-                name=hotel.get("name", "Unknown Hotel"),
-                price=price,
-                rating=rating,
-                location=location,
-                link=hotel.get("link", "")
-            )
-            transformed_hotels.append(hotel_info)
+            # Extract link
+            link = hotel.get("link", "") or hotel.get("serpapi_property_details_link", "")
+            
+            # Create hotel info object - only add if we have valid data
+            if name != "Unknown Hotel" and (price != "Not available" or rating > 0.0):
+                hotel_info = HotelInfo(
+                    name=name,
+                    price=price,
+                    rating=rating,
+                    location=location,
+                    link=link
+                )
+                transformed_hotels.append(hotel_info)
         except Exception as e:
             logger.error(f"Error transforming hotel data: {str(e)}")
             continue
@@ -556,11 +505,15 @@ async def get_hotel_recommendations(hotel_request: HotelRequest):
     try:
         hotels = await search_hotels(hotel_request)
         
+        # If no hotels were found, return a message
+        if not hotels:
+            return AIResponse(
+                hotels=[], 
+                ai_hotel_recommendation="No hotels found for the specified location and dates. Please try different search parameters."
+            )
+        
         # Format hotel data for AI analysis
-        hotel_text_data = "\n\n".join([
-            f"**Hotel {i+1}:** {hotel.name}\n- Price: {hotel.price}\n- Rating: {hotel.rating}\n- Location: {hotel.location}"
-            for i, hotel in enumerate(hotels)
-        ])
+        hotel_text_data = format_travel_data("hotels", hotels)
         
         ai_recommendation = await get_ai_recommendation("hotels", hotel_text_data)
         return AIResponse(hotels=hotels, ai_hotel_recommendation=ai_recommendation)
@@ -595,5 +548,4 @@ app.add_middleware(
 # Run FastAPI Server
 if __name__ == "__main__":
     logger.info("Starting Travel Planning API server")
-    import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
